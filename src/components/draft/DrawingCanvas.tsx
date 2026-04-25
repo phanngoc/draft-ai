@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Stage, Layer, Line, Rect, Circle, Group } from "react-konva";
 import type Konva from "konva";
-import { ensureCounterClockwise, polygonArea, snapPointToGrid } from "@/lib/geometry";
-import type { Footprint, Point } from "@/lib/schema";
-import { Square, Pentagon, Trash2 } from "lucide-react";
+import { ensureCounterClockwise, polygonArea, polygonCentroid, snapPointToGrid } from "@/lib/geometry";
+import type { Point, Zone, ZoneType } from "@/lib/schema";
+import { Square, Pentagon, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type DrawingTool = "rect" | "polygon";
@@ -13,8 +13,8 @@ export type DrawingTool = "rect" | "polygon";
 interface Props {
   width: number;
   height: number;
-  initialFootprint?: Footprint | null;
-  onFootprintChange: (footprint: Footprint | null) => void;
+  initialZones?: Zone[];
+  onZonesChange: (zones: Zone[]) => void;
 }
 
 const PX_PER_M = 28;
@@ -23,27 +23,58 @@ const SNAP_M = 0.5;
 const ORIGIN_X = 30;
 const ORIGIN_Y = 30;
 
+const ZONE_TYPES: { type: ZoneType; label: string; emoji: string }[] = [
+  { type: "building", label: "Building", emoji: "🏠" },
+  { type: "garden", label: "Garden", emoji: "🌿" },
+  { type: "lawn", label: "Lawn", emoji: "🌱" },
+  { type: "deck", label: "Deck", emoji: "🪵" },
+  { type: "patio_outdoor", label: "Patio", emoji: "🪨" },
+  { type: "pool", label: "Pool", emoji: "🏊" },
+  { type: "parking", label: "Parking", emoji: "🚗" },
+  { type: "driveway", label: "Driveway", emoji: "🛣️" },
+  { type: "path", label: "Path", emoji: "🚶" },
+  { type: "fence", label: "Fence", emoji: "🪶" },
+  { type: "planter", label: "Planter", emoji: "🪴" },
+];
+
+const ZONE_STYLE: Record<ZoneType, { fill: string; stroke: string; label: string }> = {
+  building: { fill: "rgba(15,23,42,0.18)", stroke: "#0f172a", label: "#0f172a" },
+  garden: { fill: "rgba(34,197,94,0.28)", stroke: "#16a34a", label: "#166534" },
+  lawn: { fill: "rgba(132,204,22,0.22)", stroke: "#65a30d", label: "#3f6212" },
+  deck: { fill: "rgba(180,140,80,0.30)", stroke: "#a16207", label: "#7c2d12" },
+  patio_outdoor: { fill: "rgba(214,197,163,0.45)", stroke: "#a98c63", label: "#7c2d12" },
+  pool: { fill: "rgba(56,189,248,0.45)", stroke: "#0284c7", label: "#075985" },
+  parking: { fill: "rgba(100,116,139,0.30)", stroke: "#475569", label: "#1e293b" },
+  driveway: { fill: "rgba(120,113,108,0.25)", stroke: "#57534e", label: "#1c1917" },
+  path: { fill: "rgba(203,213,225,0.55)", stroke: "#94a3b8", label: "#334155" },
+  fence: { fill: "rgba(146,64,14,0.55)", stroke: "#78350f", label: "#78350f" },
+  planter: { fill: "rgba(190,242,100,0.55)", stroke: "#65a30d", label: "#365314" },
+};
+
+function uid(prefix = "z"): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-3)}`;
+}
+
 export default function DrawingCanvas({
   width,
   height,
-  initialFootprint,
-  onFootprintChange,
+  initialZones,
+  onZonesChange,
 }: Props) {
   const [tool, setTool] = useState<DrawingTool>("rect");
+  const [zoneType, setZoneType] = useState<ZoneType>("building");
   const [rectStart, setRectStart] = useState<Point | null>(null);
   const [rectEnd, setRectEnd] = useState<Point | null>(null);
   const [polyPoints, setPolyPoints] = useState<Point[]>([]);
   const [hover, setHover] = useState<Point | null>(null);
-  const [committed, setCommitted] = useState<Point[] | null>(
-    initialFootprint?.points ?? null
-  );
+  const [zones, setZones] = useState<Zone[]>(initialZones ?? []);
   const stageRef = useRef<Konva.Stage>(null);
 
-  // Sync committed shape from props when the parent loads or replaces the footprint.
+  // Sync zones from props when the parent loads them.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCommitted(initialFootprint?.points ?? null);
-  }, [initialFootprint]);
+    setZones(initialZones ?? []);
+  }, [initialZones]);
 
   function canvasToWorld(cx: number, cy: number): Point {
     const x = (cx - ORIGIN_X) / PX_PER_M;
@@ -57,19 +88,32 @@ export default function DrawingCanvas({
     return points.flatMap(worldToCanvas);
   }
 
-  function commit(points: Point[]) {
+  function commitZone(points: Point[]) {
     const cleaned = ensureCounterClockwise(points);
-    setCommitted(cleaned);
-    onFootprintChange({ points: cleaned });
+    const newZone: Zone = {
+      id: uid(zoneType === "building" ? "z_b" : "z"),
+      type: zoneType,
+      polygon: cleaned,
+      label: defaultLabelForType(zoneType, zones),
+    };
+    const next = [...zones, newZone];
+    setZones(next);
+    onZonesChange(next);
   }
 
-  function reset() {
+  function removeZone(id: string) {
+    const next = zones.filter((z) => z.id !== id);
+    setZones(next);
+    onZonesChange(next);
+  }
+
+  function clearAll() {
     setRectStart(null);
     setRectEnd(null);
     setPolyPoints([]);
     setHover(null);
-    setCommitted(null);
-    onFootprintChange(null);
+    setZones([]);
+    onZonesChange([]);
   }
 
   // Compute grid lines once
@@ -108,14 +152,9 @@ export default function DrawingCanvas({
     if (!pos) return;
     const wp = canvasToWorld(pos.x, pos.y);
     if (tool === "rect") {
-      if (committed) reset();
       setRectStart(wp);
       setRectEnd(wp);
     } else {
-      if (committed) {
-        setCommitted(null);
-        onFootprintChange(null);
-      }
       setPolyPoints((prev) => [...prev, wp]);
     }
   }
@@ -149,25 +188,27 @@ export default function DrawingCanvas({
       [maxX, maxY],
       [minX, maxY],
     ];
-    commit(pts);
+    commitZone(pts);
     setRectStart(null);
     setRectEnd(null);
   }
 
   function onDblClick() {
     if (tool !== "polygon" || polyPoints.length < 3) return;
-    commit(polyPoints);
+    commitZone(polyPoints);
     setPolyPoints([]);
   }
 
-  // Keyboard support: Enter to close polygon, Escape to reset
+  // Keyboard support: Enter to close polygon, Escape to cancel current draw.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Enter" && tool === "polygon" && polyPoints.length >= 3) {
-        commit(polyPoints);
+        commitZone(polyPoints);
         setPolyPoints([]);
       } else if (e.key === "Escape") {
-        reset();
+        setRectStart(null);
+        setRectEnd(null);
+        setPolyPoints([]);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -193,26 +234,95 @@ export default function DrawingCanvas({
   }
 
   const liveArea = liveRect ? polygonArea(liveRect) : null;
-  const committedArea = committed ? polygonArea(committed) : null;
+  const totalArea = zones
+    .filter((z) => z.type === "building")
+    .reduce((s, z) => s + polygonArea(z.polygon), 0);
+  const liveStyle = ZONE_STYLE[zoneType];
 
   return (
     <div className="relative">
-      <div className="absolute top-2 left-2 z-10 flex gap-1 rounded-lg border border-neutral-200 bg-white/90 p-1 shadow-sm backdrop-blur">
-        <ToolButton active={tool === "rect"} onClick={() => setTool("rect")} title="Rectangle (drag)">
-          <Square size={16} />
-        </ToolButton>
-        <ToolButton
-          active={tool === "polygon"}
-          onClick={() => setTool("polygon")}
-          title="Polygon (click points, Enter or double-click to close)"
-        >
-          <Pentagon size={16} />
-        </ToolButton>
-        <div className="mx-1 w-px bg-neutral-200" />
-        <ToolButton onClick={reset} title="Clear (Esc)">
-          <Trash2 size={16} />
-        </ToolButton>
+      {/* Top toolbar: tool + zone-type chips */}
+      <div className="absolute top-2 left-2 right-2 z-10 flex flex-wrap items-center gap-1">
+        <div className="flex items-center gap-1 rounded-lg border border-neutral-200 bg-white/95 p-1 shadow-sm backdrop-blur">
+          <ToolButton active={tool === "rect"} onClick={() => setTool("rect")} title="Rectangle (drag)">
+            <Square size={14} />
+          </ToolButton>
+          <ToolButton
+            active={tool === "polygon"}
+            onClick={() => setTool("polygon")}
+            title="Polygon (click points, Enter or double-click to close)"
+          >
+            <Pentagon size={14} />
+          </ToolButton>
+          <div className="mx-0.5 w-px self-stretch bg-neutral-200" />
+          <ToolButton onClick={clearAll} title="Clear all zones">
+            <Trash2 size={14} />
+          </ToolButton>
+        </div>
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-neutral-200 bg-white/95 p-1 shadow-sm backdrop-blur">
+          {ZONE_TYPES.map((z) => {
+            const active = z.type === zoneType;
+            const style = ZONE_STYLE[z.type];
+            return (
+              <button
+                key={z.type}
+                type="button"
+                onClick={() => setZoneType(z.type)}
+                title={`Draw a ${z.label.toLowerCase()} zone`}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition",
+                  active
+                    ? "ring-1 ring-offset-1 ring-neutral-900"
+                    : "hover:bg-neutral-100"
+                )}
+                style={
+                  active
+                    ? { background: style.fill, color: style.label, borderColor: style.stroke }
+                    : { color: style.label }
+                }
+              >
+                <span aria-hidden>{z.emoji}</span>
+                <span>{z.label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
+
+      {/* Bottom-left: zone list with × delete */}
+      {zones.length > 0 && (
+        <div className="absolute bottom-2 left-2 z-10 flex max-w-[60%] flex-wrap gap-1 rounded-md bg-white/90 p-1 text-[11px] shadow-sm backdrop-blur">
+          {zones.map((z) => {
+            const style = ZONE_STYLE[z.type];
+            return (
+              <span
+                key={z.id}
+                className="flex items-center gap-1 rounded-full border px-1.5 py-0.5"
+                style={{
+                  background: style.fill,
+                  color: style.label,
+                  borderColor: style.stroke,
+                }}
+              >
+                <span className="font-mono text-[10px] uppercase tracking-wider">{z.type}</span>
+                <span className="opacity-70">
+                  {polygonArea(z.polygon).toFixed(1)} m²
+                </span>
+                <button
+                  type="button"
+                  onClick={() => removeZone(z.id)}
+                  title="Remove zone"
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-white/40"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Bottom-right: cursor coords + areas */}
       <div className="absolute bottom-2 right-2 z-10 rounded-md bg-white/90 px-2 py-1 text-xs text-neutral-600 shadow-sm">
         {hover && (
           <span className="font-mono">
@@ -221,12 +331,12 @@ export default function DrawingCanvas({
         )}
         {liveArea !== null && (
           <span className="ml-2 font-mono text-neutral-900">
-            {liveRect![1][0] - liveRect![0][0]}×{liveRect![2][1] - liveRect![1][1]}m · {liveArea.toFixed(1)} m²
+            {(liveRect![1][0] - liveRect![0][0]).toFixed(1)}×{(liveRect![2][1] - liveRect![1][1]).toFixed(1)}m · {liveArea.toFixed(1)} m²
           </span>
         )}
-        {committedArea !== null && !liveArea && (
+        {totalArea > 0 && !liveArea && (
           <span className="ml-2 font-mono text-emerald-700">
-            ✓ {committedArea.toFixed(1)} m²
+            ✓ {totalArea.toFixed(1)} m² built
           </span>
         )}
       </div>
@@ -257,31 +367,44 @@ export default function DrawingCanvas({
         </Layer>
 
         <Layer>
+          {/* Committed zones */}
+          {zones.map((z) => {
+            const style = ZONE_STYLE[z.type];
+            const c = polygonCentroid(z.polygon);
+            const [cx, cy] = worldToCanvas(c);
+            return (
+              <Group key={z.id}>
+                <Line
+                  points={flatPolyline(z.polygon)}
+                  closed
+                  stroke={style.stroke}
+                  strokeWidth={2}
+                  fill={style.fill}
+                />
+                {/* Label centroid: small text via Konva would need import; skip for now. */}
+                {z.polygon.map((p, i) => {
+                  const [px, py] = worldToCanvas(p);
+                  return <Circle key={i} x={px} y={py} radius={2.5} fill={style.stroke} />;
+                })}
+                {/* Type marker dot in centre (visual cue) */}
+                <Circle x={cx} y={cy} radius={2} fill={style.stroke} opacity={0.4} />
+              </Group>
+            );
+          })}
+
+          {/* Live rectangle preview */}
           {liveRect && (
             <Line
               points={flatPolyline(liveRect)}
               closed
-              stroke="#0284c7"
+              stroke={liveStyle.stroke}
               strokeWidth={1.5}
-              fill="rgba(56,189,248,0.18)"
+              fill={liveStyle.fill}
               dash={[4, 4]}
             />
           )}
-          {committed && (
-            <Group>
-              <Line
-                points={flatPolyline(committed)}
-                closed
-                stroke="#0f172a"
-                strokeWidth={2}
-                fill="rgba(15,23,42,0.06)"
-              />
-              {committed.map((p, i) => {
-                const [cx, cy] = worldToCanvas(p);
-                return <Circle key={i} x={cx} y={cy} radius={3} fill="#0f172a" />;
-              })}
-            </Group>
-          )}
+
+          {/* In-progress polygon */}
           {tool === "polygon" && polyPoints.length > 0 && (
             <Group>
               <Line
@@ -289,13 +412,13 @@ export default function DrawingCanvas({
                   ...flatPolyline(polyPoints),
                   ...(hover ? worldToCanvas(hover) : []),
                 ]}
-                stroke="#0284c7"
+                stroke={liveStyle.stroke}
                 strokeWidth={1.5}
                 dash={[4, 4]}
               />
               {polyPoints.map((p, i) => {
                 const [cx, cy] = worldToCanvas(p);
-                return <Circle key={i} x={cx} y={cy} radius={4} fill="#0284c7" />;
+                return <Circle key={i} x={cx} y={cy} radius={4} fill={liveStyle.stroke} />;
               })}
             </Group>
           )}
@@ -303,6 +426,12 @@ export default function DrawingCanvas({
       </Stage>
     </div>
   );
+}
+
+function defaultLabelForType(type: ZoneType, existing: Zone[]): string {
+  const sameType = existing.filter((z) => z.type === type).length;
+  const base = type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, " ");
+  return sameType > 0 ? `${base} ${sameType + 1}` : base;
 }
 
 function ToolButton({
@@ -322,7 +451,7 @@ function ToolButton({
       title={title}
       onClick={onClick}
       className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-md text-neutral-700 transition",
+        "flex h-7 w-7 items-center justify-center rounded-md text-neutral-700 transition",
         active ? "bg-neutral-900 text-white" : "hover:bg-neutral-100"
       )}
     >

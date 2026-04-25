@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { projectsRepo, turnsRepo } from "@/lib/db";
-import { FootprintSchema, PinSchema } from "@/lib/schema";
+import { FootprintSchema, PinSchema, ZoneSchema } from "@/lib/schema";
 
 export const runtime = "nodejs";
 
@@ -20,6 +20,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
 const PatchBody = z.object({
   title: z.string().min(1).max(120).optional(),
   footprint: FootprintSchema.nullable().optional(),
+  zones: z.array(ZoneSchema).max(50).optional(),
   pins: z.array(PinSchema).max(20).optional(),
 });
 

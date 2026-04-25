@@ -1,4 +1,4 @@
-import type { Layout, Room } from "./schema";
+import type { Building, Layout, Room } from "./schema";
 
 export type RoomChange = {
   id: string;
@@ -23,9 +23,19 @@ export type LayoutDiff = {
 
 const AREA_EPS = 0.05; // m² — ignore tiny float jitter
 
+// Aggregate per-building arrays into one array (rooms / walls / doors / windows / furniture)
+function flatten<T extends keyof Building>(
+  buildings: Building[],
+  key: T
+): Building[T] extends Array<infer U> ? U[] : never {
+  return buildings.flatMap((b) => b[key] as unknown as never[]) as never;
+}
+
 export function diffLayouts(prev: Layout, curr: Layout): LayoutDiff {
-  const prevById = new Map(prev.rooms.map((r) => [r.id, r]));
-  const currById = new Map(curr.rooms.map((r) => [r.id, r]));
+  const prevRooms = flatten(prev.buildings, "rooms") as Room[];
+  const currRooms = flatten(curr.buildings, "rooms") as Room[];
+  const prevById = new Map(prevRooms.map((r) => [r.id, r]));
+  const currById = new Map(currRooms.map((r) => [r.id, r]));
 
   const addedRooms: Room[] = [];
   const removedRooms: Room[] = [];
@@ -50,17 +60,24 @@ export function diffLayouts(prev: Layout, curr: Layout): LayoutDiff {
     if (!currById.has(id)) removedRooms.push(before);
   }
 
-  const totalAreaBefore = prev.rooms.reduce((s, r) => s + r.area, 0);
-  const totalAreaAfter = curr.rooms.reduce((s, r) => s + r.area, 0);
+  const totalAreaBefore = prevRooms.reduce((s, r) => s + r.area, 0);
+  const totalAreaAfter = currRooms.reduce((s, r) => s + r.area, 0);
+
+  const prevWindows = prev.buildings.reduce((s, b) => s + b.windows.length, 0);
+  const currWindows = curr.buildings.reduce((s, b) => s + b.windows.length, 0);
+  const prevDoors = prev.buildings.reduce((s, b) => s + b.doors.length, 0);
+  const currDoors = curr.buildings.reduce((s, b) => s + b.doors.length, 0);
+  const prevFurn = prev.buildings.reduce((s, b) => s + b.furniture.length, 0);
+  const currFurn = curr.buildings.reduce((s, b) => s + b.furniture.length, 0);
 
   return {
     addedRooms,
     removedRooms,
     changedRooms,
     unchangedCount,
-    windowCountDelta: curr.windows.length - prev.windows.length,
-    doorCountDelta: curr.doors.length - prev.doors.length,
-    furnitureCountDelta: curr.furniture.length - prev.furniture.length,
+    windowCountDelta: currWindows - prevWindows,
+    doorCountDelta: currDoors - prevDoors,
+    furnitureCountDelta: currFurn - prevFurn,
     siteFeatureCountDelta:
       (curr.site_features?.length ?? 0) - (prev.site_features?.length ?? 0),
     totalAreaBefore,

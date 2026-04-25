@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, use } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { toast } from "sonner";
-import type { Footprint, Layout, Pin } from "@/lib/schema";
+import type { Layout, Pin, Zone } from "@/lib/schema";
 import { useProject, type ConvTurn } from "@/hooks/useProject";
 import ConversationPanel from "@/components/draft/ConversationPanel";
 import FloorPlan2D from "@/components/draft/FloorPlan2D";
@@ -48,7 +48,7 @@ export default function ProjectStudioPage({ params }: PageProps) {
   const { id } = use(params);
   const [tab, setTab] = useState<ResultTab>("2d");
   const turnsLengthRef = useRef(0);
-  const lastSavedFootprintRef = useRef<Footprint | null>(null);
+  const lastSavedZonesRef = useRef<Zone[]>([]);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [compareMode, setCompareMode] = useState(false);
@@ -91,7 +91,7 @@ export default function ProjectStudioPage({ params }: PageProps) {
     loadError,
     isStreaming,
     streamingTurnId,
-    setFootprint,
+    setZones,
     setTitle,
     setPins,
     walkthrough,
@@ -111,20 +111,29 @@ export default function ProjectStudioPage({ params }: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTurnId]);
 
-  // A turn is "stale" if it was generated for a different footprint than the
-  // current project footprint. Stale turns stay browsable but won't be sent
+  // A turn is "stale" if it was generated for a different building zone shape
+  // than the current project. Stale turns stay browsable but won't be sent
   // back to Claude as conversation context for new generations.
-  const projectFootprint = project?.footprint ?? null;
+  const projectZones = useMemo(() => project?.zones ?? [], [project?.zones]);
   const staleTurnIds = useMemo(() => {
     const ids = new Set<string>();
-    if (!projectFootprint) return ids;
-    const cur = projectFootprint.points;
+    if (projectZones.length === 0) return ids;
+    const buildingZones = projectZones.filter((z) => z.type === "building");
+    if (buildingZones.length === 0) return ids;
     for (const t of turns) {
       if (t.status !== "done" || !t.layout) continue;
-      if (!pointsApproxEqual(t.layout.building.footprint, cur)) ids.add(t.id);
+      let stale = false;
+      for (const lb of t.layout.buildings) {
+        const zone = buildingZones.find((z) => z.id === lb.zone_id);
+        if (!zone || !pointsApproxEqual(lb.footprint, zone.polygon)) {
+          stale = true;
+          break;
+        }
+      }
+      if (stale) ids.add(t.id);
     }
     return ids;
-  }, [turns, projectFootprint]);
+  }, [turns, projectZones]);
 
   // Done turns (those with a usable layout) — used for compare picker
   const doneTurns = useMemo(
@@ -174,40 +183,48 @@ export default function ProjectStudioPage({ params }: PageProps) {
     turnsLengthRef.current = turns.length;
   }, [turns.length]);
 
-  // Track last-saved footprint for diff detection
+  // Track last-saved zones for diff detection
   useEffect(() => {
-    if (project) lastSavedFootprintRef.current = project.footprint;
+    if (project) lastSavedZonesRef.current = project.zones;
   }, [project]);
 
-  function handleFootprintChange(f: Footprint | null) {
-    const last = lastSavedFootprintRef.current;
-    if (f === null && last === null) return;
-    if (f && last && footprintsEqual(f, last)) return;
-
-    setFootprint(f)
+  function handleZonesChange(next: Zone[]) {
+    const last = lastSavedZonesRef.current;
+    if (zonesEqual(next, last)) return;
+    setZones(next)
       .then(() => {
-        lastSavedFootprintRef.current = f;
-        const hadHistory = turns.length > 0;
-        if (hadHistory && f && last && !footprintsEqual(f, last)) {
+        const hadBuilding = last.some((z) => z.type === "building");
+        const buildingChanged =
+          hadBuilding &&
+          last
+            .filter((z) => z.type === "building")
+            .some(
+              (z) =>
+                !next.some((n) => n.id === z.id && pointsApproxEqual(n.polygon, z.polygon))
+            );
+        lastSavedZonesRef.current = next;
+        if (buildingChanged && turns.length > 0) {
           toast.info(
-            "Footprint changed. Earlier turns are kept in history but marked stale; new generations start fresh from this shape."
+            "Building zone changed. Earlier turns are kept in history but marked stale; new generations start fresh."
           );
         }
       })
       .catch((e) => toast.error(e instanceof Error ? e.message : "Save failed"));
   }
 
+  const hasBuildingZone = (project?.zones ?? []).some((z) => z.type === "building");
+
   function onSend(prompt: string) {
-    if (!project?.footprint) {
-      toast.error("Draw a footprint first.");
+    if (!hasBuildingZone) {
+      toast.error("Draw at least one Building zone first.");
       return;
     }
     send(prompt);
   }
 
   function onEditTurn(turnId: string, newPrompt: string) {
-    if (!project?.footprint) {
-      toast.error("Footprint missing.");
+    if (!hasBuildingZone) {
+      toast.error("At least one Building zone is required.");
       return;
     }
     editTurn(turnId, newPrompt);
@@ -329,7 +346,22 @@ export default function ProjectStudioPage({ params }: PageProps) {
         </div>
         <div className="text-[11px] text-neutral-500">
           {layout
-            ? `${layout.rooms.length} rooms · ${layout.walls.length} walls · ${layout.windows.length} windows`
+            ? (() => {
+                const roomCount = layout.buildings.reduce(
+                  (s, b) => s + b.rooms.length,
+                  0
+                );
+                const wallCount = layout.buildings.reduce(
+                  (s, b) => s + b.walls.length,
+                  0
+                );
+                const winCount = layout.buildings.reduce(
+                  (s, b) => s + b.windows.length,
+                  0
+                );
+                const bldCount = layout.buildings.length;
+                return `${bldCount} ${bldCount === 1 ? "building" : "buildings"} · ${roomCount} rooms · ${wallCount} walls · ${winCount} windows`;
+              })()
             : turns.length > 0
               ? "Generating…"
               : "Draw a shape, then describe your home"}
@@ -347,8 +379,8 @@ export default function ProjectStudioPage({ params }: PageProps) {
               <DrawingCanvas
                 width={canvasSize.w}
                 height={canvasSize.h}
-                initialFootprint={project.footprint}
-                onFootprintChange={handleFootprintChange}
+                initialZones={project.zones}
+                onZonesChange={handleZonesChange}
               />
             )}
           </div>
@@ -503,7 +535,7 @@ export default function ProjectStudioPage({ params }: PageProps) {
           turns={turns}
           currentTurnId={currentTurnId}
           isStreaming={isStreaming}
-          hasFootprint={!!project.footprint}
+          hasFootprint={hasBuildingZone}
           staleTurnIds={staleTurnIds}
           prefillSignal={prefillSignal}
           onSend={onSend}
@@ -517,10 +549,12 @@ export default function ProjectStudioPage({ params }: PageProps) {
   );
 }
 
-function footprintsEqual(a: Footprint, b: Footprint): boolean {
-  if (a.points.length !== b.points.length) return false;
-  for (let i = 0; i < a.points.length; i++) {
-    if (a.points[i][0] !== b.points[i][0] || a.points[i][1] !== b.points[i][1]) return false;
+function zonesEqual(a: Zone[], b: Zone[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].id !== b[i].id) return false;
+    if (a[i].type !== b[i].type) return false;
+    if (!pointsApproxEqual(a[i].polygon, b[i].polygon, 0.001)) return false;
   }
   return true;
 }

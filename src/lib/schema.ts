@@ -120,6 +120,40 @@ export const FurnitureSchema = z.object({
     .describe("[width_x, depth_y, height_z] in meters."),
 });
 
+// =====================================================================
+// Zones — designer-drawn polygons that compose the SITE PLAN.
+// One project has many zones; each zone is one polygon with a type.
+// "building" zones get a full interior layout from the AI.
+// All other types are outdoor and AI just acknowledges them.
+// =====================================================================
+
+export const ZoneTypeSchema = z.enum([
+  "building",
+  "garden",
+  "lawn",
+  "deck",
+  "patio_outdoor",
+  "pool",
+  "parking",
+  "driveway",
+  "path",
+  "fence",
+  "planter",
+]);
+export type ZoneType = z.infer<typeof ZoneTypeSchema>;
+
+export const ZoneSchema = z.object({
+  id: z.string().min(1).describe("Unique zone id, e.g. 'z_main_house', 'z_south_garden'"),
+  type: ZoneTypeSchema,
+  polygon: z
+    .array(PointSchema)
+    .min(3)
+    .describe("CCW polygon vertices in meters."),
+  label: z.string().optional().describe("Optional human-readable label."),
+});
+export type Zone = z.infer<typeof ZoneSchema>;
+
+// Legacy site-feature shape (kept for back-compat with old layouts in DB).
 export const SiteFeatureTypeSchema = z.enum([
   "garden",
   "lawn",
@@ -133,41 +167,48 @@ export const SiteFeatureTypeSchema = z.enum([
   "fence",
 ]);
 export type SiteFeatureType = z.infer<typeof SiteFeatureTypeSchema>;
-
 export const SiteFeatureSchema = z.object({
-  id: z.string().describe("Unique site feature id, e.g. 'sf_garden_n'"),
+  id: z.string(),
   type: SiteFeatureTypeSchema,
-  name: z.string().optional().describe("Optional human-readable label, e.g. 'North garden'"),
-  polygon: z
-    .array(PointSchema)
-    .min(3)
-    .describe(
-      "CCW polygon in meters in the SAME world coordinate system as the building footprint. Site features are typically placed OUTSIDE the building footprint, in a ~15m halo around it."
-    ),
+  name: z.string().optional(),
+  polygon: z.array(PointSchema).min(3),
   notes: z.string().optional(),
 });
 export type SiteFeature = z.infer<typeof SiteFeatureSchema>;
 
-export const LayoutSchema = z.object({
-  building: z.object({
-    footprint: z.array(PointSchema).min(3),
-    floor_height: z
-      .number()
-      .positive()
-      .default(2.8)
-      .describe("Interior ceiling height in meters."),
-  }),
+// =====================================================================
+// Building — interior detail for one building zone.
+// =====================================================================
+
+export const BuildingSchema = z.object({
+  zone_id: z
+    .string()
+    .min(1)
+    .describe("References the project zone whose type=='building'."),
+  footprint: z
+    .array(PointSchema)
+    .min(3)
+    .describe("Echo of the zone's polygon, kept for self-contained rendering."),
+  floor_height: z
+    .number()
+    .positive()
+    .default(2.8)
+    .describe("Interior ceiling height in meters."),
   walls: z.array(WallSchema).min(1),
   rooms: z.array(RoomSchema).min(1),
   doors: z.array(DoorSchema).default([]),
   windows: z.array(WindowSchema).default([]),
   furniture: z.array(FurnitureSchema).default([]),
-  site_features: z
-    .array(SiteFeatureSchema)
-    .default([])
-    .describe(
-      "Outdoor features placed around the building (gardens, trees, parking, decks, pools, etc.). NOT rooms — they live outside the footprint."
-    ),
+});
+export type Building = z.infer<typeof BuildingSchema>;
+
+export const LayoutSchema = z.object({
+  buildings: z
+    .array(BuildingSchema)
+    .min(1)
+    .describe("One Building per zone of type=='building'."),
+  // Optional, AI-added decorative features ON TOP of outdoor zones (e.g. trees).
+  site_features: z.array(SiteFeatureSchema).default([]),
   notes: z
     .string()
     .optional()
@@ -184,6 +225,44 @@ export type Window = z.infer<typeof WindowSchema>;
 export type Furniture = z.infer<typeof FurnitureSchema>;
 export type FurnitureType = z.infer<typeof FurnitureTypeSchema>;
 export type Layout = z.infer<typeof LayoutSchema>;
+
+// =====================================================================
+// Legacy layout shape — used to read old DB rows that pre-date zones.
+// Migration code converts this into a v2 Layout on read.
+// =====================================================================
+export const LegacyLayoutSchema = z.object({
+  building: z.object({
+    footprint: z.array(PointSchema).min(3),
+    floor_height: z.number().positive().default(2.8),
+  }),
+  walls: z.array(WallSchema).min(1),
+  rooms: z.array(RoomSchema).min(1),
+  doors: z.array(DoorSchema).default([]),
+  windows: z.array(WindowSchema).default([]),
+  furniture: z.array(FurnitureSchema).default([]),
+  site_features: z.array(SiteFeatureSchema).default([]),
+  notes: z.string().optional(),
+});
+export type LegacyLayout = z.infer<typeof LegacyLayoutSchema>;
+
+export function legacyLayoutToV2(legacy: LegacyLayout): Layout {
+  return {
+    buildings: [
+      {
+        zone_id: "z_main",
+        footprint: legacy.building.footprint,
+        floor_height: legacy.building.floor_height,
+        walls: legacy.walls,
+        rooms: legacy.rooms,
+        doors: legacy.doors,
+        windows: legacy.windows,
+        furniture: legacy.furniture,
+      },
+    ],
+    site_features: legacy.site_features ?? [],
+    notes: legacy.notes,
+  };
+}
 
 export const PinSchema = z.object({
   id: z.string().min(1),

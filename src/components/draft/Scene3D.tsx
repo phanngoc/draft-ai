@@ -29,21 +29,27 @@ export default function Scene3D({ layout }: Props) {
     () => layout.site_features ?? [],
     [layout.site_features]
   );
+  const buildings = layout.buildings;
 
-  // Compose a center + span over the building footprint AND site features so the
+  const allBuildingPts = useMemo(
+    () => buildings.flatMap((b) => b.footprint),
+    [buildings]
+  );
+
+  // Compose a center + span over every building AND site features so the
   // camera frames everything (e.g. a garden wraps around the house).
   const center = useMemo(() => {
-    const allPts: Point[] = [...layout.building.footprint];
+    const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
-    const c = polygonCentroid(allPts.length ? allPts : layout.building.footprint);
+    const c = polygonCentroid(allPts.length ? allPts : allBuildingPts);
     return c;
-  }, [layout, siteFeatures]);
+  }, [allBuildingPts, siteFeatures]);
 
   const b = useMemo(() => {
-    const allPts: Point[] = [...layout.building.footprint];
+    const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
-    return bbox(allPts.length ? allPts : layout.building.footprint);
-  }, [layout, siteFeatures]);
+    return bbox(allPts.length ? allPts : allBuildingPts);
+  }, [allBuildingPts, siteFeatures]);
   const span = Math.max(b.maxX - b.minX, b.maxY - b.minY);
 
   const cameraSpec = useMemo(() => {
@@ -147,22 +153,26 @@ export default function Scene3D({ layout }: Props) {
           <meshStandardMaterial color="#86b673" roughness={1} />
         </mesh>
 
-        {/* Floor of building */}
-        <BuildingFloor footprint={layout.building.footprint} />
+        {/* Floors of every building */}
+        {buildings.map((bld) => (
+          <BuildingFloor key={`floor_${bld.zone_id}`} footprint={bld.footprint} />
+        ))}
 
         {/* Site features (gardens, trees, decks, etc.) — render between ground and walls */}
         {siteFeatures.map((sf) => (
           <SiteFeatureMesh key={sf.id} feature={sf} />
         ))}
 
-        {/* Walls */}
-        {layout.walls.map((w) => (
-          <WallMesh key={w.id} wall={w} height={layout.building.floor_height} />
-        ))}
-
-        {/* Furniture */}
-        {layout.furniture.map((f) => (
-          <FurnitureMesh key={f.id} item={f} />
+        {/* Walls + furniture per building */}
+        {buildings.map((bld) => (
+          <group key={`bld_${bld.zone_id}`}>
+            {bld.walls.map((w) => (
+              <WallMesh key={w.id} wall={w} height={bld.floor_height} />
+            ))}
+            {bld.furniture.map((f) => (
+              <FurnitureMesh key={f.id} item={f} />
+            ))}
+          </group>
         ))}
 
         {/* Soft ground shadow under building */}

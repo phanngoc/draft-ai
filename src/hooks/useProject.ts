@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Critique, Footprint, Layout, Pin } from "@/lib/schema";
+import type { Critique, Footprint, Layout, Pin, Zone } from "@/lib/schema";
 import { LayoutSchema } from "@/lib/schema";
 
 export type ConvTurn = {
@@ -20,6 +20,7 @@ export type ConvProject = {
   id: string;
   title: string;
   footprint: Footprint | null;
+  zones: Zone[];
   pins: Pin[];
   createdAt: number;
   updatedAt: number;
@@ -124,8 +125,23 @@ export function useProject(projectId: string) {
       if (!res.ok) throw new Error(`Failed to save footprint (${res.status})`);
       const data = await res.json();
       setProject(data.project);
-      // Server now keeps all turns across footprint changes; turns whose
-      // embedded footprint no longer matches will be flagged "stale" by the UI.
+      setTurns((data.turns as ServerTurn[]).map(toConvTurn));
+    },
+    [projectId]
+  );
+
+  const setZones = useCallback(
+    async (zones: Zone[]) => {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zones }),
+      });
+      if (!res.ok) throw new Error(`Failed to save zones (${res.status})`);
+      const data = await res.json();
+      setProject(data.project);
+      // Server keeps all turns across site-plan edits; turns whose embedded
+      // building footprints don't match the new zones get flagged stale by UI.
       setTurns((data.turns as ServerTurn[]).map(toConvTurn));
     },
     [projectId]
@@ -351,6 +367,7 @@ export function useProject(projectId: string) {
     isStreaming,
     streamingTurnId,
     setFootprint,
+    setZones,
     setTitle,
     setPins,
     walkthrough,

@@ -1,7 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
-import { LayoutSchema, type Footprint, type Layout, type Pin } from "./schema";
+import {
+  LayoutSchema,
+  LegacyLayoutSchema,
+  legacyLayoutToV2,
+  type Footprint,
+  type Layout,
+  type Pin,
+  type Zone,
+} from "./schema";
 
 const DB_PATH = path.resolve(process.cwd(), "data", "draft-ai.db");
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -36,9 +44,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_turns_project_idx ON turns(project_id, idx);
 `);
 
-// Idempotent migration for older DBs that pre-date pins_json
+// Idempotent migrations for older DBs.
 try {
   db.exec(`ALTER TABLE projects ADD COLUMN pins_json TEXT`);
+} catch {
+  // column already exists — fine
+}
+try {
+  db.exec(`ALTER TABLE projects ADD COLUMN zones_json TEXT`);
 } catch {
   // column already exists — fine
 }
@@ -47,6 +60,7 @@ export type ProjectRow = {
   id: string;
   title: string;
   footprint_json: string | null;
+  zones_json: string | null;
   pins_json: string | null;
   created_at: number;
   updated_at: number;
@@ -68,7 +82,10 @@ export type TurnRow = {
 export type Project = {
   id: string;
   title: string;
+  /** Legacy single-footprint accessor — always reflects the first building zone if any. */
   footprint: Footprint | null;
+  /** v2: full site plan as a list of typed zones. */
+  zones: Zone[];
   pins: Pin[];
   createdAt: number;
   updatedAt: number;
@@ -95,10 +112,41 @@ function rowToProject(r: ProjectRow): Project {
       if (Array.isArray(parsed)) pins = parsed as Pin[];
     } catch {}
   }
+  // Resolve zones with legacy fallback: an old project only has footprint_json.
+  let zones: Zone[] = [];
+  if (r.zones_json) {
+    try {
+      const parsed = JSON.parse(r.zones_json);
+      if (Array.isArray(parsed)) zones = parsed as Zone[];
+    } catch {}
+  }
+  let footprint: Footprint | null = null;
+  if (r.footprint_json) {
+    try {
+      footprint = JSON.parse(r.footprint_json) as Footprint;
+    } catch {}
+  }
+  // If we have a legacy footprint but no zones yet, synthesise a single building zone.
+  if (zones.length === 0 && footprint) {
+    zones = [
+      {
+        id: "z_main",
+        type: "building",
+        polygon: footprint.points,
+        label: "Main building",
+      },
+    ];
+  }
+  // Keep legacy `footprint` accessor pointing at the first building zone.
+  if (!footprint) {
+    const b = zones.find((z) => z.type === "building");
+    if (b) footprint = { points: b.polygon };
+  }
   return {
     id: r.id,
     title: r.title,
-    footprint: r.footprint_json ? (JSON.parse(r.footprint_json) as Footprint) : null,
+    footprint,
+    zones,
     pins,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -109,21 +157,59 @@ function rowToTurn(r: TurnRow): Turn {
   let layout: Layout | null = null;
   if (r.layout_json) {
     try {
-      // Re-parse through Zod so defaults (site_features=[], etc.) are applied
-      // for older rows that pre-date schema additions.
       const raw = JSON.parse(r.layout_json);
-      const parsed = LayoutSchema.safeParse(raw);
-      if (parsed.success) {
-        layout = parsed.data;
+      // Try v2 first, then upgrade legacy v1 (single `building` field).
+      const v2 = LayoutSchema.safeParse(raw);
+      if (v2.success) {
+        layout = v2.data;
       } else {
-        // Fallback: keep raw and patch missing arrays so renderers don't crash.
-        layout = {
-          ...(raw as Layout),
-          site_features: Array.isArray(raw?.site_features) ? raw.site_features : [],
-          doors: Array.isArray(raw?.doors) ? raw.doors : [],
-          windows: Array.isArray(raw?.windows) ? raw.windows : [],
-          furniture: Array.isArray(raw?.furniture) ? raw.furniture : [],
-        } as Layout;
+        const legacy = LegacyLayoutSchema.safeParse(raw);
+        if (legacy.success) {
+          layout = legacyLayoutToV2(legacy.data);
+        } else if (raw && typeof raw === "object") {
+          // Best-effort fallback: hand-patch missing arrays so renderers don't crash.
+          if (Array.isArray((raw as Layout).buildings)) {
+            layout = {
+              buildings: (raw as Layout).buildings,
+              site_features: Array.isArray((raw as Layout).site_features)
+                ? (raw as Layout).site_features
+                : [],
+              notes: (raw as Layout).notes,
+            };
+          } else if ((raw as { building?: unknown }).building) {
+            // Looks legacy but malformed; manually shape it.
+            const b = (raw as { building: { footprint: [number, number][]; floor_height?: number } })
+              .building;
+            layout = {
+              buildings: [
+                {
+                  zone_id: "z_main",
+                  footprint: b.footprint,
+                  floor_height: b.floor_height ?? 2.8,
+                  walls: Array.isArray((raw as { walls?: unknown }).walls)
+                    ? ((raw as { walls: import("./schema").Wall[] }).walls)
+                    : [],
+                  rooms: Array.isArray((raw as { rooms?: unknown }).rooms)
+                    ? ((raw as { rooms: import("./schema").Room[] }).rooms)
+                    : [],
+                  doors: Array.isArray((raw as { doors?: unknown }).doors)
+                    ? ((raw as { doors: import("./schema").Door[] }).doors)
+                    : [],
+                  windows: Array.isArray((raw as { windows?: unknown }).windows)
+                    ? ((raw as { windows: import("./schema").Window[] }).windows)
+                    : [],
+                  furniture: Array.isArray((raw as { furniture?: unknown }).furniture)
+                    ? ((raw as { furniture: import("./schema").Furniture[] }).furniture)
+                    : [],
+                },
+              ],
+              site_features: Array.isArray((raw as { site_features?: unknown }).site_features)
+                ? ((raw as { site_features: import("./schema").SiteFeature[] }).site_features)
+                : [],
+              notes: (raw as { notes?: string }).notes,
+            };
+          }
+        }
       }
     } catch {
       layout = null;
@@ -170,7 +256,12 @@ export const projectsRepo = {
   },
   update(
     id: string,
-    patch: { title?: string; footprint?: Footprint | null; pins?: Pin[] }
+    patch: {
+      title?: string;
+      footprint?: Footprint | null;
+      zones?: Zone[];
+      pins?: Pin[];
+    }
   ): Project | null {
     const sets: string[] = ["updated_at = ?"];
     const params: (string | number | null)[] = [Date.now()];
@@ -181,6 +272,17 @@ export const projectsRepo = {
     if (patch.footprint !== undefined) {
       sets.push("footprint_json = ?");
       params.push(patch.footprint === null ? null : JSON.stringify(patch.footprint));
+    }
+    if (patch.zones !== undefined) {
+      sets.push("zones_json = ?");
+      params.push(JSON.stringify(patch.zones));
+      // Mirror the first building zone into legacy footprint_json so any code
+      // still reading footprint stays consistent.
+      const firstBuilding = patch.zones.find((z) => z.type === "building");
+      sets.push("footprint_json = ?");
+      params.push(
+        firstBuilding ? JSON.stringify({ points: firstBuilding.polygon }) : null
+      );
     }
     if (patch.pins !== undefined) {
       sets.push("pins_json = ?");

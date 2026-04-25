@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import type { Door, Layout, Point, SiteFeature, Wall, Window } from "@/lib/schema";
+import type { Building, Door, Layout, Point, SiteFeature, Wall, Window } from "@/lib/schema";
 import {
   bbox,
   distance,
@@ -28,12 +28,18 @@ export default function FloorPlan2D({ layout }: Props) {
     () => layout.site_features ?? [],
     [layout.site_features]
   );
+  const buildings = layout.buildings;
+
+  const allBuildingPts = useMemo(
+    () => buildings.flatMap((b) => b.footprint),
+    [buildings]
+  );
 
   const view = useMemo(() => {
-    // Combined bbox over building + site features so the viewBox shows the whole site.
-    const allPts: Point[] = [...layout.building.footprint];
+    // Combined bbox over every building + site features.
+    const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
-    const b = bbox(allPts.length ? allPts : layout.building.footprint);
+    const b = bbox(allPts.length ? allPts : allBuildingPts);
     const PAD = 2.5; // meters
     const w = b.maxX - b.minX + PAD * 2;
     const h = b.maxY - b.minY + PAD * 2;
@@ -42,13 +48,7 @@ export default function FloorPlan2D({ layout }: Props) {
       bbox: b,
       pad: PAD,
     };
-  }, [layout, siteFeatures]);
-
-  const wallById = useMemo(() => {
-    const m = new Map<string, Wall>();
-    for (const w of layout.walls) m.set(w.id, w);
-    return m;
-  }, [layout.walls]);
+  }, [allBuildingPts, siteFeatures]);
 
   function exportPng() {
     const svg = svgRef.current;
@@ -74,7 +74,9 @@ export default function FloorPlan2D({ layout }: Props) {
     img.src = `data:image/svg+xml;base64,${svg64}`;
   }
 
-  const dims = bbox(layout.building.footprint);
+  // Overall site bbox is what we already computed (view.bbox), used for
+  // background grid, dimension callouts, and corner ornaments.
+  const dims = view.bbox;
   const totalW = dims.maxX - dims.minX;
   const totalH = dims.maxY - dims.minY;
 
@@ -158,115 +160,15 @@ export default function FloorPlan2D({ layout }: Props) {
           fill="url(#grid-major)"
         />
 
-        {/* Site features — rendered BEFORE building so the building sits on top */}
+        {/* Site features — rendered BEFORE buildings so buildings sit on top */}
         {siteFeatures.map((sf) => (
           <SiteFeatureSymbol key={sf.id} feature={sf} />
         ))}
 
-        {/* Footprint outline (light) */}
-        <polygon
-          points={flat(layout.building.footprint)}
-          fill="#fafafa"
-          stroke="#94a3b8"
-          strokeWidth="0.04"
-          strokeDasharray="0.3 0.2"
-        />
-
-        {/* Room polygons */}
-        {layout.rooms.map((room) => {
-          const c = polygonCentroid(room.polygon);
-          return (
-            <g key={room.id}>
-              <polygon
-                points={flat(room.polygon)}
-                fill={roomColor(room.type)}
-                fillOpacity={0.4}
-                stroke="#0f172a"
-                strokeWidth="0.02"
-                strokeOpacity={0.15}
-              />
-              <text
-                x={sx(c[0])}
-                y={sy(c[1])}
-                textAnchor="middle"
-                fontSize="0.35"
-                fontFamily="system-ui, sans-serif"
-                fontWeight="600"
-                fill="#0f172a"
-              >
-                {room.name}
-              </text>
-              <text
-                x={sx(c[0])}
-                y={sy(c[1]) + 0.42}
-                textAnchor="middle"
-                fontSize="0.27"
-                fontFamily="system-ui, sans-serif"
-                fill="#475569"
-              >
-                {room.area.toFixed(1)} m²
-              </text>
-            </g>
-          );
-        })}
-
-        {/* Walls — render as thick centered strokes */}
-        {layout.walls.map((w) => (
-          <line
-            key={w.id}
-            x1={sx(w.start[0])}
-            y1={sy(w.start[1])}
-            x2={sx(w.end[0])}
-            y2={sy(w.end[1])}
-            stroke="#0f172a"
-            strokeWidth={w.thickness}
-            strokeLinecap="butt"
-          />
+        {/* Buildings — one self-contained drawing per building zone */}
+        {buildings.map((b) => (
+          <BuildingSymbol key={b.zone_id} building={b} />
         ))}
-
-        {/* Windows: white "gap" then two thin lines */}
-        {layout.windows.map((win) => {
-          const wall = wallById.get(win.wall_id);
-          if (!wall) return null;
-          return <WindowSymbol key={win.id} wall={wall} window={win} />;
-        })}
-
-        {/* Doors: white gap, panel, swing arc */}
-        {layout.doors.map((d) => {
-          const wall = wallById.get(d.wall_id);
-          if (!wall) return null;
-          return <DoorSymbol key={d.id} wall={wall} door={d} />;
-        })}
-
-        {/* Furniture (subtle outlines) */}
-        {layout.furniture.map((f) => {
-          const [w, depth] = f.dimensions;
-          const rad = (f.rotation_deg * Math.PI) / 180;
-          const cos = Math.cos(rad);
-          const sin = Math.sin(rad);
-          const corners: Point[] = [
-            [-w / 2, -depth / 2],
-            [w / 2, -depth / 2],
-            [w / 2, depth / 2],
-            [-w / 2, depth / 2],
-          ].map(
-            ([x, y]) =>
-              [
-                f.position[0] + x * cos - y * sin,
-                f.position[1] + x * sin + y * cos,
-              ] as Point
-          );
-          return (
-            <polygon
-              key={f.id}
-              points={flat(corners)}
-              fill={furnitureColor(f.type)}
-              fillOpacity={0.6}
-              stroke="#475569"
-              strokeWidth="0.02"
-            />
-          );
-        })}
 
         {/* Overall dimensions */}
         <DimensionLine
@@ -494,6 +396,119 @@ function NorthArrow({ x, y }: { x: number; y: number }) {
       <polygon points="0,-0.4 0.12,0.05 -0.12,0.05" fill="#0f172a" />
       <polygon points="0,0.05 0.12,0.05 -0.12,0.05" fill="white" stroke="#0f172a" strokeWidth="0.015" />
       <text x="0" y="-0.5" fontSize="0.22" fontFamily="system-ui" fontWeight="700" fill="#0f172a" textAnchor="middle">N</text>
+    </g>
+  );
+}
+
+function BuildingSymbol({ building }: { building: Building }) {
+  const wallById = new Map<string, Wall>();
+  for (const w of building.walls) wallById.set(w.id, w);
+  return (
+    <g>
+      {/* Footprint outline (light) */}
+      <polygon
+        points={flat(building.footprint)}
+        fill="#fafafa"
+        stroke="#94a3b8"
+        strokeWidth="0.04"
+        strokeDasharray="0.3 0.2"
+      />
+
+      {/* Room polygons */}
+      {building.rooms.map((room) => {
+        const c = polygonCentroid(room.polygon);
+        return (
+          <g key={room.id}>
+            <polygon
+              points={flat(room.polygon)}
+              fill={roomColor(room.type)}
+              fillOpacity={0.4}
+              stroke="#0f172a"
+              strokeWidth="0.02"
+              strokeOpacity={0.15}
+            />
+            <text
+              x={sx(c[0])}
+              y={sy(c[1])}
+              textAnchor="middle"
+              fontSize="0.35"
+              fontFamily="system-ui, sans-serif"
+              fontWeight="600"
+              fill="#0f172a"
+            >
+              {room.name}
+            </text>
+            <text
+              x={sx(c[0])}
+              y={sy(c[1]) + 0.42}
+              textAnchor="middle"
+              fontSize="0.27"
+              fontFamily="system-ui, sans-serif"
+              fill="#475569"
+            >
+              {room.area.toFixed(1)} m²
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Walls */}
+      {building.walls.map((w) => (
+        <line
+          key={w.id}
+          x1={sx(w.start[0])}
+          y1={sy(w.start[1])}
+          x2={sx(w.end[0])}
+          y2={sy(w.end[1])}
+          stroke="#0f172a"
+          strokeWidth={w.thickness}
+          strokeLinecap="butt"
+        />
+      ))}
+
+      {/* Windows */}
+      {building.windows.map((win) => {
+        const wall = wallById.get(win.wall_id);
+        if (!wall) return null;
+        return <WindowSymbol key={win.id} wall={wall} window={win} />;
+      })}
+
+      {/* Doors */}
+      {building.doors.map((d) => {
+        const wall = wallById.get(d.wall_id);
+        if (!wall) return null;
+        return <DoorSymbol key={d.id} wall={wall} door={d} />;
+      })}
+
+      {/* Furniture */}
+      {building.furniture.map((f) => {
+        const [w, depth] = f.dimensions;
+        const rad = (f.rotation_deg * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const corners: Point[] = [
+          [-w / 2, -depth / 2],
+          [w / 2, -depth / 2],
+          [w / 2, depth / 2],
+          [-w / 2, depth / 2],
+        ].map(
+          ([x, y]) =>
+            [
+              f.position[0] + x * cos - y * sin,
+              f.position[1] + x * sin + y * cos,
+            ] as Point
+        );
+        return (
+          <polygon
+            key={f.id}
+            points={flat(corners)}
+            fill={furnitureColor(f.type)}
+            fillOpacity={0.6}
+            stroke="#475569"
+            strokeWidth="0.02"
+          />
+        );
+      })}
     </g>
   );
 }

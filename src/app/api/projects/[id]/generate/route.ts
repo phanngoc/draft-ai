@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import type Anthropic from "@anthropic-ai/sdk";
 import { CLAUDE_MODEL, LAYOUT_TOOL, getClient } from "@/lib/claude";
-import { LayoutSchema, type Footprint, type Pin } from "@/lib/schema";
+import { LayoutSchema, type Pin, type Zone } from "@/lib/schema";
 import { SYSTEM_PROMPT, buildFollowUpPrompt, buildUserPrompt } from "@/lib/prompts";
 import { projectsRepo, turnsRepo, type Turn } from "@/lib/db";
 import { pointsApproxEqual } from "@/lib/geometry";
@@ -33,7 +33,7 @@ const Body = z.object({
 });
 
 function buildMessages(
-  footprint: Footprint,
+  zones: Zone[],
   priorTurns: Turn[],
   newPrompt: string,
   pins: Pin[]
@@ -45,7 +45,7 @@ function buildMessages(
     if (i === 0) {
       msgs.push({
         role: "user",
-        content: buildUserPrompt(footprint, turn.prompt, pins),
+        content: buildUserPrompt(zones, turn.prompt, pins),
       });
     } else {
       const prev = priorTurns[i - 1];
@@ -77,7 +77,7 @@ function buildMessages(
   if (priorTurns.length === 0) {
     msgs.push({
       role: "user",
-      content: buildUserPrompt(footprint, newPrompt, pins),
+      content: buildUserPrompt(zones, newPrompt, pins),
     });
   } else {
     const last = priorTurns[priorTurns.length - 1];
@@ -105,9 +105,10 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (!project) {
     return Response.json({ error: "Project not found" }, { status: 404 });
   }
-  if (!project.footprint) {
+  const buildingZones = project.zones.filter((z) => z.type === "building");
+  if (buildingZones.length === 0) {
     return Response.json(
-      { error: "Project has no footprint. Save a footprint before generating." },
+      { error: "Project needs at least one zone of type 'building' before generating." },
       { status: 400 }
     );
   }
@@ -127,15 +128,18 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   }
   const { prompt, editTurnId } = parsed.data;
 
-  const currentFootprintPts = project.footprint.points;
-
-  // A turn is "fresh" (usable as conversation context) if its layout was generated
-  // for the current project footprint. Turns generated for a previous footprint shape
-  // are kept in history but excluded from priorTurns (otherwise Claude would see
-  // contradictory geometry between turns).
+  // A turn is "fresh" (usable as conversation context) if every building zone in
+  // the layout still matches a building zone in the current project (matched by
+  // zone_id). If any building zone has been re-drawn, we exclude that turn
+  // (otherwise Claude would see contradictory geometry between turns).
   function isFreshTurn(t: Turn): boolean {
     if (t.status !== "done" || !t.layout || !t.toolUseId) return false;
-    return pointsApproxEqual(t.layout.building.footprint, currentFootprintPts);
+    for (const lb of t.layout.buildings) {
+      const zone = buildingZones.find((z) => z.id === lb.zone_id);
+      if (!zone) return false;
+      if (!pointsApproxEqual(lb.footprint, zone.polygon)) return false;
+    }
+    return true;
   }
 
   let priorTurns: Turn[];
@@ -171,7 +175,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
 
         const client = getClient();
         const messages = buildMessages(
-          project.footprint!,
+          project.zones,
           priorTurns,
           prompt,
           project.pins ?? []
