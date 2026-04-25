@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, use } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, use } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -60,17 +60,22 @@ export default function ProjectStudioPage({ params }: PageProps) {
 
   // Measure the canvas wrapper so the Konva Stage adapts to whatever vertical
   // space the layout actually grants it (avoids overflow into the footer).
-  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  // Use a callback ref so the observer attaches whenever the element mounts —
+  // important because the page early-returns a "loading…" view before the real
+  // layout (with the ref'd div) is rendered.
   const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({
     w: 0,
     h: 0,
   });
-  useEffect(() => {
-    const el = canvasContainerRef.current;
+  const roRef = useRef<ResizeObserver | null>(null);
+  const setCanvasContainer = useCallback((el: HTMLDivElement | null) => {
+    if (roRef.current) {
+      roRef.current.disconnect();
+      roRef.current = null;
+    }
     if (!el) return;
     const update = () => {
       const rect = el.getBoundingClientRect();
-      // Pad by 24px so the Konva canvas doesn't kiss the card border.
       const w = Math.max(280, Math.floor(rect.width - 24));
       const h = Math.max(280, Math.floor(rect.height - 24));
       setCanvasSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
@@ -78,7 +83,7 @@ export default function ProjectStudioPage({ params }: PageProps) {
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    return () => ro.disconnect();
+    roRef.current = ro;
   }, []);
 
   const {
@@ -372,7 +377,7 @@ export default function ProjectStudioPage({ params }: PageProps) {
         <section className="flex w-[540px] shrink-0 flex-col gap-2">
           <PaneTitle icon={<Layers size={14} />} title="Step 1 — Draw your footprint" />
           <div
-            ref={canvasContainerRef}
+            ref={setCanvasContainer}
             className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm"
           >
             {canvasSize.w > 0 && canvasSize.h > 0 && (
