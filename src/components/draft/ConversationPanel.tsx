@@ -236,7 +236,7 @@ export default function ConversationPanel({
               className="w-full resize-none rounded-md border border-transparent bg-transparent px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-neutral-200 focus:outline-none"
               maxLength={2000}
             />
-            {focused && !draft && (
+            {focused && !draft && turns.length === 0 && (
               <div className="flex flex-wrap gap-1 px-3 pb-2">
                 {suggestions.map((s) => (
                   <button

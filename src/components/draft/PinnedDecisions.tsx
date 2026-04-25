@@ -59,20 +59,35 @@ export default function PinnedDecisions({ pins, onChange, disabled }: Props) {
     }
   }
 
-  const showSuggestions = pins.length === 0 && !adding;
+  // Suggestions shown only while actively adding, filtered by the draft input.
+  const draftLower = draft.trim().toLowerCase();
+  const filteredSuggestions = adding
+    ? PIN_SUGGESTIONS.filter(
+        (s) =>
+          s.kind === draftKind &&
+          !pins.some((p) => p.text === s.text) &&
+          (draftLower === "" || s.text.toLowerCase().includes(draftLower))
+      ).slice(0, 4)
+    : [];
 
   return (
-    <div className="rounded-xl border border-neutral-200 bg-white px-3 py-2 shadow-sm">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="rounded-lg border border-neutral-200 bg-white px-2.5 py-1.5 shadow-sm">
+      <div className="flex flex-wrap items-center gap-1.5">
         <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-neutral-500">
           <PinIcon size={11} className="text-violet-600" />
-          Project rules
+          Rules
           {pins.length > 0 && (
-            <span className="rounded bg-neutral-100 px-1 font-mono text-[10px] text-neutral-600">
+            <span className="rounded bg-violet-100 px-1 font-mono text-[10px] text-violet-700">
               {pins.length}
             </span>
           )}
         </span>
+
+        {pins.length === 0 && !adding && (
+          <span className="text-[11px] italic text-neutral-400">
+            Lock in must-include / must-avoid constraints across every generation.
+          </span>
+        )}
 
         {pins.map((p) => (
           <div
@@ -117,7 +132,7 @@ export default function PinnedDecisions({ pins, onChange, disabled }: Props) {
             type="button"
             onClick={() => setAdding(true)}
             disabled={disabled}
-            className="flex items-center gap-1 rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 transition hover:border-violet-400 hover:bg-violet-50 hover:text-violet-700 disabled:opacity-50"
+            className="ml-auto flex items-center gap-1 rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-xs text-neutral-600 transition hover:border-violet-400 hover:bg-violet-50 hover:text-violet-700 disabled:opacity-50"
           >
             <Plus size={11} /> Pin a rule
           </button>
@@ -181,18 +196,21 @@ export default function PinnedDecisions({ pins, onChange, disabled }: Props) {
         )}
       </div>
 
-      {showSuggestions && (
+      {adding && filteredSuggestions.length > 0 && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           <span className="text-[10px] uppercase tracking-wider text-neutral-400">
             Try
           </span>
-          {PIN_SUGGESTIONS.map((s, i) => (
+          {filteredSuggestions.map((s, i) => (
             <button
               key={i}
               type="button"
-              onClick={() =>
-                onChange([...pins, { id: uid(), text: s.text, kind: s.kind }])
-              }
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange([...pins, { id: uid(), text: s.text, kind: s.kind }]);
+                setDraft("");
+                setAdding(false);
+              }}
               disabled={disabled}
               className={cn(
                 "rounded-full border px-2 py-0.5 text-[11px] text-neutral-600 transition hover:bg-neutral-50",
