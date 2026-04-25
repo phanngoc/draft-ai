@@ -58,6 +58,29 @@ export default function ProjectStudioPage({ params }: PageProps) {
     nonce: number;
   } | null>(null);
 
+  // Measure the canvas wrapper so the Konva Stage adapts to whatever vertical
+  // space the layout actually grants it (avoids overflow into the footer).
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const [canvasSize, setCanvasSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  useEffect(() => {
+    const el = canvasContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      // Pad by 24px so the Konva canvas doesn't kiss the card border.
+      const w = Math.max(280, Math.floor(rect.width - 24));
+      const h = Math.max(280, Math.floor(rect.height - 24));
+      setCanvasSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const {
     project,
     turns,
@@ -252,9 +275,6 @@ export default function ProjectStudioPage({ params }: PageProps) {
   const showStreamingOverlay =
     isStreaming && (!layout || streamingTurnId === currentTurnId);
 
-  const CANVAS_W = 520;
-  const CANVAS_H = 480;
-
   return (
     <div className="flex h-screen min-h-0 flex-col bg-neutral-50">
       <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2">
@@ -319,13 +339,18 @@ export default function ProjectStudioPage({ params }: PageProps) {
       <main className="flex min-h-0 flex-1 gap-3 p-3">
         <section className="flex w-[540px] shrink-0 flex-col gap-2">
           <PaneTitle icon={<Layers size={14} />} title="Step 1 — Draw your footprint" />
-          <div className="flex flex-1 items-center justify-center rounded-xl border border-neutral-200 bg-white p-3 shadow-sm">
-            <DrawingCanvas
-              width={CANVAS_W}
-              height={CANVAS_H}
-              initialFootprint={project.footprint}
-              onFootprintChange={handleFootprintChange}
-            />
+          <div
+            ref={canvasContainerRef}
+            className="flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-neutral-200 bg-white p-3 shadow-sm"
+          >
+            {canvasSize.w > 0 && canvasSize.h > 0 && (
+              <DrawingCanvas
+                width={canvasSize.w}
+                height={canvasSize.h}
+                initialFootprint={project.footprint}
+                onFootprintChange={handleFootprintChange}
+              />
+            )}
           </div>
           {currentTurn?.layout?.notes && (
             <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-900">
