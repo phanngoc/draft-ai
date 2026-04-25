@@ -1,7 +1,16 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import type { Building, Door, Layout, Point, SiteFeature, Wall, Window } from "@/lib/schema";
+import type {
+  Building,
+  Door,
+  Layout,
+  Point,
+  SiteFeature,
+  Wall,
+  Window,
+  Zone,
+} from "@/lib/schema";
 import {
   bbox,
   distance,
@@ -13,6 +22,10 @@ import { Download } from "lucide-react";
 
 interface Props {
   layout: Layout;
+  /** All user-drawn zones from the project. Outdoor zones render as
+   * authoritative background; building zones are skipped here since the
+   * Layout already contains the building footprint + interior detail. */
+  zones?: Zone[];
 }
 
 // Y-flip helper: world is Y-up, SVG is Y-down.
@@ -21,7 +34,7 @@ const sy = (y: number) => -y;
 const svgPt = (p: Point) => `${sx(p[0])},${sy(p[1])}`;
 const flat = (pts: Point[]) => pts.map(svgPt).join(" ");
 
-export default function FloorPlan2D({ layout }: Props) {
+export default function FloorPlan2D({ layout, zones }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   const siteFeatures = useMemo(
@@ -30,15 +43,37 @@ export default function FloorPlan2D({ layout }: Props) {
   );
   const buildings = layout.buildings;
 
+  // Outdoor zones drawn by the designer (authoritative — render even if the
+  // AI didn't echo them as site_features).
+  const outdoorZones = useMemo(
+    () => (zones ?? []).filter((z) => z.type !== "building"),
+    [zones]
+  );
+
+  // Skip site_features that just duplicate an outdoor zone (matched by
+  // approximate polygon equality) so we don't double-render the same shape.
+  const decorativeSiteFeatures = useMemo(() => {
+    if (outdoorZones.length === 0) return siteFeatures;
+    return siteFeatures.filter(
+      (sf) =>
+        !outdoorZones.some(
+          (z) =>
+            z.type === sf.type &&
+            polygonsApproxEqual(z.polygon, sf.polygon)
+        )
+    );
+  }, [siteFeatures, outdoorZones]);
+
   const allBuildingPts = useMemo(
     () => buildings.flatMap((b) => b.footprint),
     [buildings]
   );
 
   const view = useMemo(() => {
-    // Combined bbox over every building + site features.
+    // Combined bbox over every building + site features + outdoor zones.
     const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
+    for (const z of outdoorZones) allPts.push(...z.polygon);
     const b = bbox(allPts.length ? allPts : allBuildingPts);
     const PAD = 2.5; // meters
     const w = b.maxX - b.minX + PAD * 2;
@@ -48,7 +83,7 @@ export default function FloorPlan2D({ layout }: Props) {
       bbox: b,
       pad: PAD,
     };
-  }, [allBuildingPts, siteFeatures]);
+  }, [allBuildingPts, siteFeatures, outdoorZones]);
 
   function exportPng() {
     const svg = svgRef.current;
@@ -160,8 +195,14 @@ export default function FloorPlan2D({ layout }: Props) {
           fill="url(#grid-major)"
         />
 
-        {/* Site features — rendered BEFORE buildings so buildings sit on top */}
-        {siteFeatures.map((sf) => (
+        {/* Outdoor zones (user-drawn) — render first as authoritative background */}
+        {outdoorZones.map((z) => (
+          <ZoneSymbol key={z.id} zone={z} />
+        ))}
+
+        {/* AI decorative site features (trees, planters, etc.) — render on top
+            of zones but under buildings */}
+        {decorativeSiteFeatures.map((sf) => (
           <SiteFeatureSymbol key={sf.id} feature={sf} />
         ))}
 
@@ -397,6 +438,30 @@ function NorthArrow({ x, y }: { x: number; y: number }) {
       <polygon points="0,0.05 0.12,0.05 -0.12,0.05" fill="white" stroke="#0f172a" strokeWidth="0.015" />
       <text x="0" y="-0.5" fontSize="0.22" fontFamily="system-ui" fontWeight="700" fill="#0f172a" textAnchor="middle">N</text>
     </g>
+  );
+}
+
+function polygonsApproxEqual(a: Point[], b: Point[], eps = 0.05): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs(a[i][0] - b[i][0]) > eps) return false;
+    if (Math.abs(a[i][1] - b[i][1]) > eps) return false;
+  }
+  return true;
+}
+
+function ZoneSymbol({ zone }: { zone: Zone }) {
+  // A user-drawn zone shares the same look as a site feature of the same type.
+  // Reuse SiteFeatureSymbol semantics by adapting the zone into its shape.
+  return (
+    <SiteFeatureSymbol
+      feature={{
+        id: zone.id,
+        type: zone.type === "driveway" ? "path" : (zone.type as SiteFeature["type"]),
+        name: zone.label,
+        polygon: zone.polygon,
+      }}
+    />
   );
 }
 

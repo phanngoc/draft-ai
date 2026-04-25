@@ -62,9 +62,11 @@ For every zone with type=="building", produce one entry in \`buildings[]\`:
 
 The outdoor zones are NOT your job to reshape — but you SHOULD respect them when designing each building (orient the living room toward a garden zone, place the entry near the path zone, put the master bedroom away from the parking zone, etc.).
 
-You may optionally add small decorative \`site_features\` ON TOP of outdoor zones — for example, individual trees inside a garden zone (one tree = one site_feature with type="tree", a tiny 1.5–3 m diameter polygon centred where the tree should be).
+You may optionally add small decorative \`site_features\` ON TOP of outdoor zones — for example, individual trees inside a garden zone (one tree = one site_feature with type="tree", a tiny 1.5–3 m diameter polygon centred where the tree should be), planters on a deck, or a fence along the property edge.
 
-Do NOT create site_features that contradict an outdoor zone (no parking_lot site_feature inside a garden zone, etc.).
+DO NOT echo the designer's outdoor zones back as site_features. The user already drew the garden / lawn / parking / pool / deck / etc. — those polygons are rendered from project.zones directly. If you submit a site_feature with the same type and approximately the same polygon as an existing outdoor zone, the renderer will discard it as a duplicate. Use site_features ONLY for tree, planter, fence, or smaller decorative elements that are STRICTLY INSIDE an outdoor zone.
+
+Do NOT create site_features that contradict an outdoor zone (no parking site_feature inside a garden zone, etc.).
 
 ## Hard Architectural Constraints (per building)
 - Bedrooms ≥ 9 m². Master bedroom ≥ 12 m². Bathrooms ≥ 3 m². Toilets ≥ 1.5 m².
