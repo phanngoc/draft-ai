@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local sqlite database
+/data/
+
+# playwright MCP test screenshots
+/.playwright-mcp/
