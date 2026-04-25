@@ -10,7 +10,7 @@ import {
   Sky,
 } from "@react-three/drei";
 import * as THREE from "three";
-import type { Furniture, Layout, Point, Wall } from "@/lib/schema";
+import type { Furniture, Layout, Point, SiteFeature, Wall } from "@/lib/schema";
 import { bbox, distance, polygonCentroid } from "@/lib/geometry";
 import { Compass, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,12 +25,20 @@ export default function Scene3D({ layout }: Props) {
   const [view, setView] = useState<ViewMode>("perspective");
   const [showShadows, setShowShadows] = useState(true);
 
+  // Compose a center + span over the building footprint AND site features so the
+  // camera frames everything (e.g. a garden wraps around the house).
   const center = useMemo(() => {
-    const c = polygonCentroid(layout.building.footprint);
+    const allPts: Point[] = [...layout.building.footprint];
+    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    const c = polygonCentroid(allPts.length ? allPts : layout.building.footprint);
     return c;
   }, [layout]);
 
-  const b = useMemo(() => bbox(layout.building.footprint), [layout]);
+  const b = useMemo(() => {
+    const allPts: Point[] = [...layout.building.footprint];
+    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    return bbox(allPts.length ? allPts : layout.building.footprint);
+  }, [layout]);
   const span = Math.max(b.maxX - b.minX, b.maxY - b.minY);
 
   const cameraSpec = useMemo(() => {
@@ -137,6 +145,11 @@ export default function Scene3D({ layout }: Props) {
         {/* Floor of building */}
         <BuildingFloor footprint={layout.building.footprint} />
 
+        {/* Site features (gardens, trees, decks, etc.) — render between ground and walls */}
+        {layout.site_features.map((sf) => (
+          <SiteFeatureMesh key={sf.id} feature={sf} />
+        ))}
+
         {/* Walls */}
         {layout.walls.map((w) => (
           <WallMesh key={w.id} wall={w} height={layout.building.floor_height} />
@@ -226,6 +239,117 @@ function WallMesh({ wall, height }: { wall: Wall; height: number }) {
       <meshStandardMaterial color={wall.type === "exterior" ? "#f5f1ea" : "#fafafa"} roughness={0.9} />
     </mesh>
   );
+}
+
+function siteShape(polygon: Point[]): THREE.Shape {
+  const s = new THREE.Shape();
+  if (polygon.length === 0) return s;
+  s.moveTo(polygon[0][0], -polygon[0][1]);
+  for (let i = 1; i < polygon.length; i++) {
+    s.lineTo(polygon[i][0], -polygon[i][1]);
+  }
+  s.closePath();
+  return s;
+}
+
+function siteRadius(polygon: Point[], centroid: Point): number {
+  let max = 0;
+  for (const p of polygon) {
+    const d = Math.hypot(p[0] - centroid[0], p[1] - centroid[1]);
+    if (d > max) max = d;
+  }
+  return max;
+}
+
+function SiteFeatureMesh({ feature }: { feature: SiteFeature }) {
+  const c = polygonCentroid(feature.polygon);
+
+  if (feature.type === "tree") {
+    const r = Math.max(0.4, siteRadius(feature.polygon, c) * 0.7);
+    return (
+      <group position={[c[0], 0, -c[1]]}>
+        {/* Trunk */}
+        <mesh position={[0, 0.6, 0]} castShadow>
+          <cylinderGeometry args={[0.1, 0.14, 1.2, 10]} />
+          <meshStandardMaterial color="#78350f" roughness={1} />
+        </mesh>
+        {/* Canopy */}
+        <mesh position={[0, 1.6, 0]} castShadow>
+          <sphereGeometry args={[r, 12, 10]} />
+          <meshStandardMaterial color="#15803d" roughness={1} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (feature.type === "fence") {
+    // Render as low extruded strip following the polygon outline.
+    const shape = siteShape(feature.polygon);
+    return (
+      <mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+        <extrudeGeometry args={[shape, { depth: 0.05, bevelEnabled: false }]} />
+        <meshStandardMaterial color="#92400e" roughness={1} />
+      </mesh>
+    );
+  }
+
+  if (feature.type === "planter") {
+    // Slight raised box.
+    const shape = siteShape(feature.polygon);
+    return (
+      <mesh position={[0, 0, 0]} castShadow receiveShadow>
+        <extrudeGeometry args={[shape, { depth: 0.4, bevelEnabled: false }]} />
+        <meshStandardMaterial color="#65a30d" roughness={0.95} />
+      </mesh>
+    );
+  }
+
+  // Flat patches: garden, lawn, deck, patio_outdoor, pool, parking, path
+  const yOffset =
+    feature.type === "deck" || feature.type === "patio_outdoor"
+      ? 0.06
+      : feature.type === "pool"
+        ? -0.05
+        : 0.005; // sit just above ground to avoid z-fighting
+  const color = sitePatchColor(feature.type);
+  const shape = siteShape(feature.polygon);
+  return (
+    <mesh
+      position={[0, yOffset, 0]}
+      rotation-x={-Math.PI / 2}
+      receiveShadow
+    >
+      <shapeGeometry args={[shape]} />
+      <meshStandardMaterial
+        color={color.fill}
+        roughness={color.roughness}
+        metalness={feature.type === "pool" ? 0.3 : 0}
+        transparent={feature.type === "pool"}
+        opacity={feature.type === "pool" ? 0.85 : 1}
+      />
+    </mesh>
+  );
+}
+
+function sitePatchColor(type: string): { fill: string; roughness: number } {
+  switch (type) {
+    case "garden":
+      return { fill: "#4ade80", roughness: 1 };
+    case "lawn":
+      return { fill: "#86efac", roughness: 1 };
+    case "deck":
+      return { fill: "#a98c63", roughness: 0.7 };
+    case "patio_outdoor":
+      return { fill: "#d6c5a3", roughness: 0.85 };
+    case "pool":
+      return { fill: "#0ea5e9", roughness: 0.1 };
+    case "parking":
+      return { fill: "#475569", roughness: 0.95 };
+    case "path":
+      return { fill: "#cbd5e1", roughness: 0.9 };
+    default:
+      return { fill: "#9ca3af", roughness: 0.9 };
+  }
 }
 
 function FurnitureMesh({ item }: { item: Furniture }) {

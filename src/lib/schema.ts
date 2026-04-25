@@ -120,6 +120,34 @@ export const FurnitureSchema = z.object({
     .describe("[width_x, depth_y, height_z] in meters."),
 });
 
+export const SiteFeatureTypeSchema = z.enum([
+  "garden",
+  "lawn",
+  "tree",
+  "deck",
+  "patio_outdoor",
+  "pool",
+  "parking",
+  "planter",
+  "path",
+  "fence",
+]);
+export type SiteFeatureType = z.infer<typeof SiteFeatureTypeSchema>;
+
+export const SiteFeatureSchema = z.object({
+  id: z.string().describe("Unique site feature id, e.g. 'sf_garden_n'"),
+  type: SiteFeatureTypeSchema,
+  name: z.string().optional().describe("Optional human-readable label, e.g. 'North garden'"),
+  polygon: z
+    .array(PointSchema)
+    .min(3)
+    .describe(
+      "CCW polygon in meters in the SAME world coordinate system as the building footprint. Site features are typically placed OUTSIDE the building footprint, in a ~15m halo around it."
+    ),
+  notes: z.string().optional(),
+});
+export type SiteFeature = z.infer<typeof SiteFeatureSchema>;
+
 export const LayoutSchema = z.object({
   building: z.object({
     footprint: z.array(PointSchema).min(3),
@@ -134,6 +162,12 @@ export const LayoutSchema = z.object({
   doors: z.array(DoorSchema).default([]),
   windows: z.array(WindowSchema).default([]),
   furniture: z.array(FurnitureSchema).default([]),
+  site_features: z
+    .array(SiteFeatureSchema)
+    .default([])
+    .describe(
+      "Outdoor features placed around the building (gardens, trees, parking, decks, pools, etc.). NOT rooms — they live outside the footprint."
+    ),
   notes: z
     .string()
     .optional()

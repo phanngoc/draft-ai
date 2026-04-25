@@ -16,6 +16,7 @@ export type LayoutDiff = {
   windowCountDelta: number;
   doorCountDelta: number;
   furnitureCountDelta: number;
+  siteFeatureCountDelta: number;
   totalAreaBefore: number;
   totalAreaAfter: number;
 };
@@ -60,6 +61,8 @@ export function diffLayouts(prev: Layout, curr: Layout): LayoutDiff {
     windowCountDelta: curr.windows.length - prev.windows.length,
     doorCountDelta: curr.doors.length - prev.doors.length,
     furnitureCountDelta: curr.furniture.length - prev.furniture.length,
+    siteFeatureCountDelta:
+      (curr.site_features?.length ?? 0) - (prev.site_features?.length ?? 0),
     totalAreaBefore,
     totalAreaAfter,
   };
@@ -92,6 +95,9 @@ export function summarizeDiff(diff: LayoutDiff): string[] {
   }
   if (diff.furnitureCountDelta !== 0) {
     parts.push(`${signed(diff.furnitureCountDelta)} furniture`);
+  }
+  if (diff.siteFeatureCountDelta !== 0) {
+    parts.push(`${signed(diff.siteFeatureCountDelta)} site element`);
   }
   if (parts.length === 0) parts.push("No structural changes");
   return parts;

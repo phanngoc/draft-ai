@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef } from "react";
-import type { Door, Layout, Point, Wall, Window } from "@/lib/schema";
+import type { Door, Layout, Point, SiteFeature, Wall, Window } from "@/lib/schema";
 import {
   bbox,
   distance,
@@ -25,7 +25,10 @@ export default function FloorPlan2D({ layout }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
 
   const view = useMemo(() => {
-    const b = bbox(layout.building.footprint);
+    // Combined bbox over building + site features so the viewBox shows the whole site.
+    const allPts: Point[] = [...layout.building.footprint];
+    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    const b = bbox(allPts.length ? allPts : layout.building.footprint);
     const PAD = 2.5; // meters
     const w = b.maxX - b.minX + PAD * 2;
     const h = b.maxY - b.minY + PAD * 2;
@@ -149,6 +152,11 @@ export default function FloorPlan2D({ layout }: Props) {
           height={totalH}
           fill="url(#grid-major)"
         />
+
+        {/* Site features — rendered BEFORE building so the building sits on top */}
+        {layout.site_features.map((sf) => (
+          <SiteFeatureSymbol key={sf.id} feature={sf} />
+        ))}
 
         {/* Footprint outline (light) */}
         <polygon
@@ -483,6 +491,174 @@ function NorthArrow({ x, y }: { x: number; y: number }) {
       <text x="0" y="-0.5" fontSize="0.22" fontFamily="system-ui" fontWeight="700" fill="#0f172a" textAnchor="middle">N</text>
     </g>
   );
+}
+
+function SiteFeatureSymbol({ feature }: { feature: SiteFeature }) {
+  const c = polygonCentroid(feature.polygon);
+  const style = siteStyle(feature.type);
+  const showLabel = feature.type !== "tree" && feature.type !== "fence";
+  return (
+    <g>
+      <polygon
+        points={flat(feature.polygon)}
+        fill={style.fill}
+        fillOpacity={style.fillOpacity}
+        stroke={style.stroke}
+        strokeWidth={style.strokeWidth}
+        strokeDasharray={style.strokeDasharray}
+      />
+      {feature.type === "tree" && (
+        <g>
+          {/* Trunk */}
+          <circle cx={sx(c[0])} cy={sy(c[1])} r="0.12" fill="#78350f" />
+          {/* Canopy outline ring */}
+          <circle
+            cx={sx(c[0])}
+            cy={sy(c[1])}
+            r={Math.max(0.4, polygonRadius(feature.polygon, c) * 0.8)}
+            fill="none"
+            stroke="#166534"
+            strokeWidth="0.04"
+          />
+        </g>
+      )}
+      {showLabel && (
+        <text
+          x={sx(c[0])}
+          y={sy(c[1])}
+          textAnchor="middle"
+          dominantBaseline="middle"
+          fontSize="0.28"
+          fontFamily="system-ui, sans-serif"
+          fontWeight="500"
+          fill={style.labelColor}
+        >
+          {feature.name ?? siteLabel(feature.type)}
+        </text>
+      )}
+    </g>
+  );
+}
+
+function polygonRadius(polygon: Point[], centroid: Point): number {
+  let max = 0;
+  for (const p of polygon) {
+    const d = Math.hypot(p[0] - centroid[0], p[1] - centroid[1]);
+    if (d > max) max = d;
+  }
+  return max;
+}
+
+function siteStyle(type: string): {
+  fill: string;
+  fillOpacity: number;
+  stroke: string;
+  strokeWidth: string;
+  strokeDasharray?: string;
+  labelColor: string;
+} {
+  switch (type) {
+    case "garden":
+      return {
+        fill: "#86efac",
+        fillOpacity: 0.55,
+        stroke: "#16a34a",
+        strokeWidth: "0.04",
+        labelColor: "#166534",
+      };
+    case "lawn":
+      return {
+        fill: "#bbf7d0",
+        fillOpacity: 0.5,
+        stroke: "#22c55e",
+        strokeWidth: "0.03",
+        strokeDasharray: "0.2 0.15",
+        labelColor: "#166534",
+      };
+    case "tree":
+      return {
+        fill: "#86efac",
+        fillOpacity: 0.7,
+        stroke: "#166534",
+        strokeWidth: "0.04",
+        labelColor: "#166534",
+      };
+    case "deck":
+    case "patio_outdoor":
+      return {
+        fill: "#fde68a",
+        fillOpacity: 0.6,
+        stroke: "#a16207",
+        strokeWidth: "0.04",
+        labelColor: "#7c2d12",
+      };
+    case "pool":
+      return {
+        fill: "#7dd3fc",
+        fillOpacity: 0.65,
+        stroke: "#0284c7",
+        strokeWidth: "0.05",
+        labelColor: "#075985",
+      };
+    case "parking":
+      return {
+        fill: "#cbd5e1",
+        fillOpacity: 0.55,
+        stroke: "#475569",
+        strokeWidth: "0.04",
+        strokeDasharray: "0.3 0.15",
+        labelColor: "#1e293b",
+      };
+    case "planter":
+      return {
+        fill: "#bef264",
+        fillOpacity: 0.7,
+        stroke: "#65a30d",
+        strokeWidth: "0.04",
+        labelColor: "#365314",
+      };
+    case "path":
+      return {
+        fill: "#e5e7eb",
+        fillOpacity: 0.7,
+        stroke: "#94a3b8",
+        strokeWidth: "0.03",
+        labelColor: "#334155",
+      };
+    case "fence":
+      return {
+        fill: "#92400e",
+        fillOpacity: 0.7,
+        stroke: "#78350f",
+        strokeWidth: "0.06",
+        labelColor: "#78350f",
+      };
+    default:
+      return {
+        fill: "#e5e7eb",
+        fillOpacity: 0.4,
+        stroke: "#94a3b8",
+        strokeWidth: "0.03",
+        labelColor: "#475569",
+      };
+  }
+}
+
+function siteLabel(type: string): string {
+  return (
+    {
+      garden: "Garden",
+      lawn: "Lawn",
+      tree: "Tree",
+      deck: "Deck",
+      patio_outdoor: "Patio",
+      pool: "Pool",
+      parking: "Parking",
+      planter: "Planter",
+      path: "Path",
+      fence: "Fence",
+    } as Record<string, string>
+  )[type] ?? type;
 }
 
 function roomColor(type: string): string {
