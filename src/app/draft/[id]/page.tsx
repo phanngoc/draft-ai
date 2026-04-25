@@ -488,12 +488,12 @@ export default function ProjectStudioPage({ params }: PageProps) {
             )}
             {layout && !compareMode && tab === "2d" && (
               <div className="h-full p-2">
-                <FloorPlan2D layout={layout} />
+                <FloorPlan2D layout={layout} zones={projectZones} />
               </div>
             )}
             {layout && !compareMode && tab === "3d" && (
               <div className="h-full p-2">
-                <Scene3D layout={layout} />
+                <Scene3D layout={layout} zones={projectZones} />
               </div>
             )}
             {layout && !compareMode && tab === "json" && <JsonView layout={layout} />}

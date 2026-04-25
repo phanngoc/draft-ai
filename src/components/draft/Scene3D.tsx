@@ -10,18 +10,26 @@ import {
   Sky,
 } from "@react-three/drei";
 import * as THREE from "three";
-import type { Furniture, Layout, Point, SiteFeature, Wall } from "@/lib/schema";
+import type {
+  Furniture,
+  Layout,
+  Point,
+  SiteFeature,
+  Wall,
+  Zone,
+} from "@/lib/schema";
 import { bbox, distance, polygonCentroid } from "@/lib/geometry";
 import { Compass, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Props {
   layout: Layout;
+  zones?: Zone[];
 }
 
 type ViewMode = "perspective" | "top" | "iso";
 
-export default function Scene3D({ layout }: Props) {
+export default function Scene3D({ layout, zones }: Props) {
   const [view, setView] = useState<ViewMode>("perspective");
   const [showShadows, setShowShadows] = useState(true);
 
@@ -31,25 +39,42 @@ export default function Scene3D({ layout }: Props) {
   );
   const buildings = layout.buildings;
 
+  // Outdoor zones (user-drawn) are authoritative; AI site_features that
+  // duplicate them are skipped to avoid double-rendering.
+  const outdoorZones = useMemo(
+    () => (zones ?? []).filter((z) => z.type !== "building"),
+    [zones]
+  );
+  const decorativeSiteFeatures = useMemo(() => {
+    if (outdoorZones.length === 0) return siteFeatures;
+    return siteFeatures.filter(
+      (sf) =>
+        !outdoorZones.some(
+          (z) => z.type === sf.type && polygonsApproxEqual(z.polygon, sf.polygon)
+        )
+    );
+  }, [siteFeatures, outdoorZones]);
+
   const allBuildingPts = useMemo(
     () => buildings.flatMap((b) => b.footprint),
     [buildings]
   );
 
-  // Compose a center + span over every building AND site features so the
-  // camera frames everything (e.g. a garden wraps around the house).
+  // Compose a center + span over buildings AND outdoor zones AND decorations.
   const center = useMemo(() => {
     const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
+    for (const z of outdoorZones) allPts.push(...z.polygon);
     const c = polygonCentroid(allPts.length ? allPts : allBuildingPts);
     return c;
-  }, [allBuildingPts, siteFeatures]);
+  }, [allBuildingPts, siteFeatures, outdoorZones]);
 
   const b = useMemo(() => {
     const allPts: Point[] = [...allBuildingPts];
     for (const sf of siteFeatures) allPts.push(...sf.polygon);
+    for (const z of outdoorZones) allPts.push(...z.polygon);
     return bbox(allPts.length ? allPts : allBuildingPts);
-  }, [allBuildingPts, siteFeatures]);
+  }, [allBuildingPts, siteFeatures, outdoorZones]);
   const span = Math.max(b.maxX - b.minX, b.maxY - b.minY);
 
   const cameraSpec = useMemo(() => {
@@ -158,8 +183,13 @@ export default function Scene3D({ layout }: Props) {
           <BuildingFloor key={`floor_${bld.zone_id}`} footprint={bld.footprint} />
         ))}
 
-        {/* Site features (gardens, trees, decks, etc.) — render between ground and walls */}
-        {siteFeatures.map((sf) => (
+        {/* Outdoor zones (user-drawn) — render as authoritative ground patches */}
+        {outdoorZones.map((z) => (
+          <ZoneMesh key={z.id} zone={z} />
+        ))}
+
+        {/* AI decorative site features (trees, planters, fences) on top */}
+        {decorativeSiteFeatures.map((sf) => (
           <SiteFeatureMesh key={sf.id} feature={sf} />
         ))}
 
@@ -274,6 +304,32 @@ function siteRadius(polygon: Point[], centroid: Point): number {
     if (d > max) max = d;
   }
   return max;
+}
+
+function polygonsApproxEqual(a: Point[], b: Point[], eps = 0.05): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs(a[i][0] - b[i][0]) > eps) return false;
+    if (Math.abs(a[i][1] - b[i][1]) > eps) return false;
+  }
+  return true;
+}
+
+// Render an outdoor zone as a 3D ground patch using the same visual rules as
+// AI-generated site features. Driveway maps to the path look (concrete grey).
+function ZoneMesh({ zone }: { zone: Zone }) {
+  const featureType: SiteFeature["type"] =
+    zone.type === "driveway" ? "path" : (zone.type as SiteFeature["type"]);
+  return (
+    <SiteFeatureMesh
+      feature={{
+        id: zone.id,
+        type: featureType,
+        name: zone.label,
+        polygon: zone.polygon,
+      }}
+    />
+  );
 }
 
 function SiteFeatureMesh({ feature }: { feature: SiteFeature }) {
