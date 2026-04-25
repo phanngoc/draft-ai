@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import fs from "node:fs";
-import type { Footprint, Layout, Pin } from "./schema";
+import { LayoutSchema, type Footprint, type Layout, type Pin } from "./schema";
 
 const DB_PATH = path.resolve(process.cwd(), "data", "draft-ai.db");
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -106,12 +106,35 @@ function rowToProject(r: ProjectRow): Project {
 }
 
 function rowToTurn(r: TurnRow): Turn {
+  let layout: Layout | null = null;
+  if (r.layout_json) {
+    try {
+      // Re-parse through Zod so defaults (site_features=[], etc.) are applied
+      // for older rows that pre-date schema additions.
+      const raw = JSON.parse(r.layout_json);
+      const parsed = LayoutSchema.safeParse(raw);
+      if (parsed.success) {
+        layout = parsed.data;
+      } else {
+        // Fallback: keep raw and patch missing arrays so renderers don't crash.
+        layout = {
+          ...(raw as Layout),
+          site_features: Array.isArray(raw?.site_features) ? raw.site_features : [],
+          doors: Array.isArray(raw?.doors) ? raw.doors : [],
+          windows: Array.isArray(raw?.windows) ? raw.windows : [],
+          furniture: Array.isArray(raw?.furniture) ? raw.furniture : [],
+        } as Layout;
+      }
+    } catch {
+      layout = null;
+    }
+  }
   return {
     id: r.id,
     projectId: r.project_id,
     idx: r.idx,
     prompt: r.prompt,
-    layout: r.layout_json ? (JSON.parse(r.layout_json) as Layout) : null,
+    layout,
     toolUseId: r.tool_use_id,
     status: r.status,
     errorMessage: r.error_message,

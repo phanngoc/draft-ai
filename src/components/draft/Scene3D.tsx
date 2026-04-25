@@ -25,20 +25,25 @@ export default function Scene3D({ layout }: Props) {
   const [view, setView] = useState<ViewMode>("perspective");
   const [showShadows, setShowShadows] = useState(true);
 
+  const siteFeatures = useMemo(
+    () => layout.site_features ?? [],
+    [layout.site_features]
+  );
+
   // Compose a center + span over the building footprint AND site features so the
   // camera frames everything (e.g. a garden wraps around the house).
   const center = useMemo(() => {
     const allPts: Point[] = [...layout.building.footprint];
-    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    for (const sf of siteFeatures) allPts.push(...sf.polygon);
     const c = polygonCentroid(allPts.length ? allPts : layout.building.footprint);
     return c;
-  }, [layout]);
+  }, [layout, siteFeatures]);
 
   const b = useMemo(() => {
     const allPts: Point[] = [...layout.building.footprint];
-    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    for (const sf of siteFeatures) allPts.push(...sf.polygon);
     return bbox(allPts.length ? allPts : layout.building.footprint);
-  }, [layout]);
+  }, [layout, siteFeatures]);
   const span = Math.max(b.maxX - b.minX, b.maxY - b.minY);
 
   const cameraSpec = useMemo(() => {
@@ -146,7 +151,7 @@ export default function Scene3D({ layout }: Props) {
         <BuildingFloor footprint={layout.building.footprint} />
 
         {/* Site features (gardens, trees, decks, etc.) — render between ground and walls */}
-        {layout.site_features.map((sf) => (
+        {siteFeatures.map((sf) => (
           <SiteFeatureMesh key={sf.id} feature={sf} />
         ))}
 

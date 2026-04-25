@@ -24,10 +24,15 @@ const flat = (pts: Point[]) => pts.map(svgPt).join(" ");
 export default function FloorPlan2D({ layout }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
 
+  const siteFeatures = useMemo(
+    () => layout.site_features ?? [],
+    [layout.site_features]
+  );
+
   const view = useMemo(() => {
     // Combined bbox over building + site features so the viewBox shows the whole site.
     const allPts: Point[] = [...layout.building.footprint];
-    for (const sf of layout.site_features) allPts.push(...sf.polygon);
+    for (const sf of siteFeatures) allPts.push(...sf.polygon);
     const b = bbox(allPts.length ? allPts : layout.building.footprint);
     const PAD = 2.5; // meters
     const w = b.maxX - b.minX + PAD * 2;
@@ -37,7 +42,7 @@ export default function FloorPlan2D({ layout }: Props) {
       bbox: b,
       pad: PAD,
     };
-  }, [layout]);
+  }, [layout, siteFeatures]);
 
   const wallById = useMemo(() => {
     const m = new Map<string, Wall>();
@@ -154,7 +159,7 @@ export default function FloorPlan2D({ layout }: Props) {
         />
 
         {/* Site features — rendered BEFORE building so the building sits on top */}
-        {layout.site_features.map((sf) => (
+        {siteFeatures.map((sf) => (
           <SiteFeatureSymbol key={sf.id} feature={sf} />
         ))}
 
